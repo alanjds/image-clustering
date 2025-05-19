@@ -6,6 +6,7 @@ import shutil
 import multiprocessing
 import time
 import numpy as np
+import PIL
 from PIL import Image
 
 
@@ -58,11 +59,20 @@ ALGORITHMS = {
 
 def _hash(arg):
     i, f, algo = arg
+    error = f, []
+
     hashfn = ALGORITHMS[algo][0]
     if i % 100 == 0:
         print(i, f)
-    i = Image.open(os.path.join(IMAGEDIR, f))
-    hash = hashfn(i)
+    try:
+        i = Image.open(os.path.join(IMAGEDIR, f))
+    except PIL.UnidentifiedImageError:
+        return error
+
+    try:
+        hash = hashfn(i)
+    except (SyntaxError, OSError):
+        return error
     return f, hash.hash.tolist()
 
 
@@ -90,10 +100,21 @@ def go(algorithm):
         pool = multiprocessing.Pool(processes=max(1, os.cpu_count() - 1))
         l = [(i, f, algorithm) for i, f in enumerate(sorted(os.listdir(IMAGEDIR)))]
         result = pool.imap_unordered(_hash, l)
-        hashes = {f: imagehash.ImageHash(np.array(h)) for f, h in result}
+        hashes = {}
+        for f,h in result:
+            try:
+                hashes[f] = imagehash.ImageHash(np.array(h))
+            except OSError:
+                pass
+
+    def key_(h):
+        try:
+            return str(h[1])
+        except ValueError:
+            return '0'
 
     files = set(hashes.keys())
-    hashes_sorted = sorted(hashes.items(), key=lambda h: str(h[1]))
+    hashes_sorted = sorted(hashes.items(), key=key_)
 
     print('Hashes computed ', time.time() - start_time)
 
@@ -112,7 +133,11 @@ def go(algorithm):
             print('diff', i1, ' time ', time.time() - start_time)
         for i2, h2 in enumerate(hashes_sorted):
             if i1 < i2:
-                diff = h1[1] - h2[1]
+                try:
+                    diff = h1[1] - h2[1]
+                except TypeError:
+                    continue
+
                 if diff < max_threshold:
                     diffs.append((diff, h1[0], h2[0]))
     # diffs = sorted(diffs, key=lambda d: d[0])
@@ -158,9 +183,13 @@ def go(algorithm):
             os.makedirs(cdir)
             for f in cluster:
                 fname, ext = os.path.splitext(f)
-                filename = '{}_{}{}'.format(fname, str(hashes[f]), ext)
+                try:
+                    filename = '{}_{}{}'.format(fname, str(hashes[f]), ext)
+                except ValueError:
+                    continue
+
                 os.symlink(os.path.abspath(os.path.join(IMAGEDIR, f)), os.path.join(cdir, filename))
-        
+
     end_time = time.time()
 
     print('Time taken: ', round(end_time - start_time, 2), 'sec\n\n')
